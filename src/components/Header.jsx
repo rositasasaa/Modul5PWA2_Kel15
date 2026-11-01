@@ -1,4 +1,4 @@
-import { Plus } from 'lucide-react'
+import { Plus, ShoppingCart } from 'lucide-react'
 import { useFavorites } from '../hooks/useFavorites'
 
 const NAV_ITEMS = [
@@ -9,13 +9,20 @@ const NAV_ITEMS = [
   { id: 'Contact', label: 'Contact' },
 ]
 
-function Header({ tab, onTab, onNavigateCreate }) {
+/**
+ * Header navigasi dengan Favorite Badge & Cart Button (Challenge 8)
+ */
+function Header({ tab, onTab, onNavigateCreate, cartCount = 0, onOpenCart }) {
   const { favorites } = useFavorites()
   const favCount = favorites ? favorites.length : 0
 
   return (
     <header className="header">
-      <div className="header-brand-wrap" onClick={() => onTab('Catalog')} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px' }}>
+      <div
+        className="header-brand-wrap"
+        onClick={() => onTab('Catalog')}
+        style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px' }}
+      >
         <div className="header-logo-badge">
           <img src="/logo.png" alt="Bore & Barrel" />
         </div>
@@ -38,16 +45,32 @@ function Header({ tab, onTab, onNavigateCreate }) {
         ))}
       </nav>
 
-      {onNavigateCreate && (
-        <button
-          type="button"
-          className="btn btn--primary btn--sm header-cta"
-          onClick={onNavigateCreate}
-          title="Register new hardware"
-        >
-          <Plus size={15} /> Add Hardware
-        </button>
-      )}
+      <div className="header-right-actions">
+        {/* Challenge 8: Tombol Keranjang Belanja */}
+        {onOpenCart && (
+          <button
+            type="button"
+            className="cart-toggle-btn"
+            onClick={onOpenCart}
+            aria-label="Buka Keranjang Belanja"
+            title="Keranjang Belanja"
+          >
+            <ShoppingCart size={18} />
+            {cartCount > 0 && <span className="cart-badge">{cartCount}</span>}
+          </button>
+        )}
+
+        {onNavigateCreate && (
+          <button
+            type="button"
+            className="btn btn--primary btn--sm header-cta"
+            onClick={onNavigateCreate}
+            title="Register new hardware"
+          >
+            <Plus size={15} /> Add Hardware
+          </button>
+        )}
+      </div>
     </header>
   )
 }

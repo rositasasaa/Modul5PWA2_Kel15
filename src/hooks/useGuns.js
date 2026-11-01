@@ -4,9 +4,10 @@ import gunService from '../services/gunService'
 // ---------------------------------------------------------------------------
 // useGuns — fetch the paginated / filtered product list from the API.
 //
-// Returns { guns, loading, error, pagination, refetch }.
-// When the API is unreachable the `error` string will be set and `guns`
-// will remain an empty array so the UI can show a proper error state.
+// Challenge 1: Pagination — mendukung navigasi halaman (page, limit, totalPages).
+// Challenge 4: Query Caching — data di-cache otomatis di gunService.
+//
+// Returns { guns, loading, error, pagination, refetch, goToPage }.
 // ---------------------------------------------------------------------------
 
 export function useGuns(params = {}) {
@@ -14,20 +15,29 @@ export function useGuns(params = {}) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [pagination, setPagination] = useState(null)
+  // Challenge 1: State halaman saat ini
+  const [currentPage, setCurrentPage] = useState(params.page || 1)
 
   // Serialise params so the effect re-runs when they change.
-  const paramKey = JSON.stringify(params)
+  const paramKey = JSON.stringify({ ...params, page: currentPage })
 
   const fetchGuns = useCallback(async () => {
     try {
       setLoading(true)
       setError(null)
 
-      const response = await gunService.getGuns(params)
+      // Challenge 1: Kirim parameter page ke service
+      const response = await gunService.getGuns({ ...params, page: currentPage })
 
       if (response.success) {
         setGuns(response.data || [])
-        setPagination(response.pagination || null)
+        // Challenge 1: Set pagination info dari response
+        setPagination(response.pagination || {
+          total: (response.data || []).length,
+          page: currentPage,
+          limit: params.limit || 12,
+          totalPages: 1,
+        })
       } else {
         setError(response.message || 'Failed to fetch products.')
       }
@@ -44,7 +54,17 @@ export function useGuns(params = {}) {
     fetchGuns()
   }, [fetchGuns])
 
-  return { guns, loading, error, pagination, refetch: fetchGuns }
+  /**
+   * Challenge 1: Fungsi untuk navigasi ke halaman tertentu
+   * @param {number} page - nomor halaman tujuan
+   */
+  const goToPage = (page) => {
+    if (page >= 1) {
+      setCurrentPage(page)
+    }
+  }
+
+  return { guns, loading, error, pagination, refetch: fetchGuns, goToPage, currentPage }
 }
 
 // ---------------------------------------------------------------------------
@@ -87,4 +107,39 @@ export function useGunById(id) {
   }, [fetchGun])
 
   return { gun, loading, error, refetch: fetchGun }
+}
+
+// ---------------------------------------------------------------------------
+// Challenge 6: useArchivedGuns — fetch soft-deleted products.
+// Returns { archivedGuns, loading, error, refetch }.
+// ---------------------------------------------------------------------------
+export function useArchivedGuns() {
+  const [archivedGuns, setArchivedGuns] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  const fetchArchived = useCallback(async () => {
+    try {
+      setLoading(true)
+      setError(null)
+
+      const response = await gunService.getArchivedGuns()
+      if (response.success) {
+        setArchivedGuns(response.data || [])
+      } else {
+        setError(response.message || 'Failed to fetch archived products.')
+      }
+    } catch (err) {
+      setError(err.message || 'An error occurred.')
+      setArchivedGuns([])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchArchived()
+  }, [fetchArchived])
+
+  return { archivedGuns, loading, error, refetch: fetchArchived }
 }

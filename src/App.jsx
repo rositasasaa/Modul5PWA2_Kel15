@@ -11,8 +11,10 @@ import About from './pages/About.jsx'
 import Contact from './pages/Contact.jsx'
 import PWABadge from './components/PWABadge.jsx'
 import ConfirmModal from './components/modals/ConfirmModal.jsx'
+import CartModal from './components/modals/CartModal.jsx'
 import SplashScreen from './components/common/SplashScreen.jsx'
 import gunService from './services/gunService.js'
+import { useCart } from './hooks/useCart.js'
 import './App.css'
 
 function App() {
@@ -23,6 +25,19 @@ function App() {
   const [editingGun, setEditingGun] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleting, setDeleting] = useState(false)
+
+  // Challenge 8: State & Hook Keranjang Belanja
+  const [isCartOpen, setIsCartOpen] = useState(false)
+  const {
+    cart,
+    addToCart,
+    updateQuantity,
+    removeFromCart,
+    clearCart,
+    totalPrice,
+    totalItemsCount,
+    checkoutToWhatsApp,
+  } = useCart()
 
   // Unified navigation handler
   const handleNavigate = (target, payload) => {
@@ -59,10 +74,13 @@ function App() {
         <SplashScreen onFinish={() => setShowSplash(false)} />
       )}
 
+      {/* Header dengan Counter Keranjang Belanja */}
       <Header
         tab={mode === 'list' ? tab : ''}
         onTab={(newTab) => handleNavigate(newTab)}
         onNavigateCreate={() => handleNavigate('Create')}
+        cartCount={totalItemsCount}
+        onOpenCart={() => setIsCartOpen(true)}
       />
 
       <main className="main">
@@ -95,6 +113,7 @@ function App() {
             onBack={handleBackToList}
             onEdit={(g) => handleNavigate('Edit', g)}
             onDelete={(g) => setDeleteTarget(g)}
+            onAddToCart={addToCart}
           />
         )}
 
@@ -104,6 +123,7 @@ function App() {
             {tab === 'Catalog' && (
               <Catalog
                 onNavigate={(destination, payload) => handleNavigate(destination, payload)}
+                onAddToCart={addToCart}
               />
             )}
             {tab === 'Favorites' && (
@@ -120,6 +140,18 @@ function App() {
           </>
         )}
       </main>
+
+      {/* Challenge 8: Modal Keranjang Belanja & Checkout WA */}
+      <CartModal
+        isOpen={isCartOpen}
+        onClose={() => setIsCartOpen(false)}
+        cart={cart}
+        updateQuantity={updateQuantity}
+        removeFromCart={removeFromCart}
+        clearCart={clearCart}
+        totalPrice={totalPrice}
+        checkoutToWhatsApp={checkoutToWhatsApp}
+      />
 
       {/* Global Delete Confirmation */}
       <ConfirmModal

@@ -1,10 +1,20 @@
-import { useState, useMemo } from 'react'
-import { RefreshCw, Plus, Loader, AlertCircle, PackageOpen } from 'lucide-react'
-import { useGuns } from '../hooks/useGuns'
+import { useState, useMemo, useEffect } from 'react'
+import {
+  RefreshCw,
+  Plus,
+  Loader,
+  AlertCircle,
+  PackageOpen,
+  Archive,
+  RotateCcw,
+  Trash2,
+} from 'lucide-react'
+import { useGuns, useArchivedGuns } from '../hooks/useGuns'
 import GUNS_LOCAL from '../data/guns'
 import GunCard from '../components/gun/GunCard'
 import GunDetail from '../components/gun/GunDetail'
 import AdvancedFilter from '../components/common/AdvancedFilter'
+import Pagination from '../components/common/Pagination'
 import ConfirmModal from '../components/modals/ConfirmModal'
 import gunService from '../services/gunService'
 import {
@@ -14,198 +24,407 @@ import {
   extractCategories,
 } from '../utils/helpers'
 
+const ITEMS_PER_PAGE = 6 // Jumlah item per halaman katalog
+
 /**
- * Catalog page — the main product listing.
- *
- * Data source priority:
- *   1. Live API via useGuns()
- *   2. Local static array (GUNS_LOCAL) when the API is unreachable
- *
- * Features: search, category filter, sort, CRUD actions, detail modal.
+ * Catalog page — product listing.
+ * 
+ * Challenge 1: Pagination untuk memecah daftar katalog per halaman.
+ * Challenge 2: Deep-linking (?gun=<id>) agar tautan share unik langsung terbuka.
+ * Challenge 6: Soft Delete, tab Arsip/Deleted, fitur Restore & Hapus Permanen.
+ * Challenge 8: Dukungan menambahkan item ke keranjang belanja (onAddToCart).
  */
-export default function Catalog({ onNavigate }) {
-  // ---- API data ----
-  const { guns: apiGuns, loading, error, refetch } = useGuns({ limit: 50 })
+export default function Catalog({ onNavigate, onAddToCart }) {
+  // ---- Challenge 6: Tab View ('active' atau 'archived') ----
+  const [activeTab, setActiveTab] = useState('active') // 'active' | 'archived'
+
+  // ---- API Data Katalog Aktif ----
+  const {
+    guns: apiGuns,
+    loading: gunsLoading,
+    error: gunsError,
+    refetch: refetchGuns,
+  } = useGuns({ limit: 100 })
+
+  // ---- Challenge 6: Data Katalog Terarsip / Terhapus ----
+  const {
+    archivedGuns,
+    loading: archivedLoading,
+    error: archivedError,
+    refetch: refetchArchived,
+  } = useArchivedGuns()
+
   const [useLocal, setUseLocal] = useState(false)
 
-  // Decide data source
+  // Menggabungkan data dengan fallback jika API offline
   const rawGuns = useMemo(() => {
-    if (useLocal || (error && apiGuns.length === 0)) {
-      // Enrich local data with synthetic ids so FavoriteButton and detail work
-      return GUNS_LOCAL.map((g, i) => ({ ...g, id: g.id || `local-${i}` }))
+    if (useLocal || (gunsError && apiGuns.length === 0)) {
+      return GUNS_LOCAL.map((g, i) => ({
+        ...g,
+        id: g.id || `local-${i}`,
+        is_deleted: false,
+      }))
     }
     return apiGuns
-  }, [apiGuns, error, useLocal])
+  }, [apiGuns, gunsError, useLocal])
 
-  // ---- filters / sort ----
+  // ---- Filter & Search ----
   const [search, setSearch] = useState('')
   const [activeCategory, setActiveCategory] = useState('All')
   const [sortKey, setSortKey] = useState('name')
   const [sortOrder, setSortOrder] = useState('asc')
 
+  // ---- Challenge 1: State Pagination ----
+  const [currentPage, setCurrentPage] = useState(1)
+
   const categories = useMemo(() => extractCategories(rawGuns), [rawGuns])
 
+  // Daftar item setelah filter & sorting
   const filteredGuns = useMemo(() => {
-    let result = rawGuns.filter(
-      (g) => matchesSearch(g, search) && matchesCategory(g, activeCategory),
+    const sourceList = activeTab === 'active' ? rawGuns : archivedGuns
+    const result = sourceList.filter(
+      (g) => matchesSearch(g, search) && matchesCategory(g, activeCategory)
     )
     return sortItems(result, sortKey, sortOrder)
-  }, [rawGuns, search, activeCategory, sortKey, sortOrder])
+  }, [activeTab, rawGuns, archivedGuns, search, activeCategory, sortKey, sortOrder])
 
-  // ---- detail view ----
+  // Challenge 1: Hitung total halaman & slice data untuk halaman aktif
+  const totalPages = Math.ceil(filteredGuns.length / ITEMS_PER_PAGE) || 1
+  const paginatedGuns = useMemo(() => {
+    const startIndex = (currentPage - 1) * ITEMS_PER_PAGE
+    return filteredGuns.slice(startIndex, startIndex + ITEMS_PER_PAGE)
+  }, [filteredGuns, currentPage])
+
+  // Reset page ke 1 jika filter berubah
+  const handleSearchChange = (val) => {
+    setSearch(val)
+    setCurrentPage(1)
+  }
+
+  const handleCategoryChange = (cat) => {
+    setActiveCategory(cat)
+    setCurrentPage(1)
+  }
+
+  // ---- Detail View ----
   const [selectedGun, setSelectedGun] = useState(null)
 
-  // ---- delete ----
-  const [deleteTarget, setDeleteTarget] = useState(null)
-  const [deleting, setDeleting] = useState(false)
-  const [deleteError, setDeleteError] = useState('')
+  // Challenge 2: Cek apakah ada query param ?gun=<id> saat pertama kali load
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const gunParam = params.get('gun')
+    if (gunParam && rawGuns.length > 0) {
+      const matched = rawGuns.find(
+        (g) => String(g.id) === gunParam || g.name.toLowerCase() === gunParam.toLowerCase()
+      )
+      if (matched) {
+        setSelectedGun(matched)
+      }
+    }
+  }, [rawGuns])
 
-  const handleDelete = async () => {
-    if (!deleteTarget) return
+  // ---- Challenge 6: Dialog Konfirmasi Soft Delete / Permanent Delete ----
+  const [deleteModal, setDeleteModal] = useState({
+    open: false,
+    target: null,
+    isPermanent: false,
+  })
+  const [actionLoading, setActionLoading] = useState(false)
+  const [toastMessage, setToastMessage] = useState('')
+
+  // Challenge 6: Eksekusi Soft Delete atau Permanent Delete
+  const handleConfirmDelete = async () => {
+    const { target, isPermanent } = deleteModal
+    if (!target) return
+
     try {
-      setDeleting(true)
-      setDeleteError('')
-      await gunService.deleteGun(deleteTarget.id)
-      setDeleteTarget(null)
-      refetch()
+      setActionLoading(true)
+      if (isPermanent) {
+        // Hapus Permanen dari database
+        await gunService.permanentDeleteGun(target.id)
+        setToastMessage(`"${target.name}" berhasil dihapus permanen.`)
+      } else {
+        // Soft Delete (Pindah ke arsip)
+        await gunService.deleteGun(target.id)
+        setToastMessage(`"${target.name}" dipindahkan ke arsip (soft delete).`)
+      }
+      setDeleteModal({ open: false, target: null, isPermanent: false })
+      refetchGuns()
+      refetchArchived()
+      setTimeout(() => setToastMessage(''), 4000)
     } catch (err) {
-      setDeleteError(err.message || 'Failed to delete.')
+      alert(err.message || 'Gagal menghapus item.')
     } finally {
-      setDeleting(false)
+      setActionLoading(false)
     }
   }
 
-  // ---- If viewing a single product detail ----
+  // Challenge 6: Restore Item dari Arsip
+  const handleRestore = async (gun) => {
+    try {
+      setActionLoading(true)
+      await gunService.restoreGun(gun.id)
+      setToastMessage(`"${gun.name}" berhasil dipulihkan ke katalog aktif!`)
+      refetchGuns()
+      refetchArchived()
+      setTimeout(() => setToastMessage(''), 4000)
+    } catch (err) {
+      alert(err.message || 'Gagal memulihkan item.')
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  // ---- Jika sedang melihat detail barang ----
   if (selectedGun) {
     return (
       <GunDetail
         gun={selectedGun}
-        onBack={() => setSelectedGun(null)}
+        onBack={() => {
+          setSelectedGun(null)
+          // Bersihkan URL param ?gun jika ada
+          const url = new URL(window.location)
+          url.searchParams.delete('gun')
+          window.history.replaceState({}, '', url)
+        }}
         onEdit={(g) => onNavigate && onNavigate('Edit', g)}
-        onDelete={(g) => { setSelectedGun(null); setDeleteTarget(g) }}
+        onDelete={(g) => {
+          setSelectedGun(null)
+          setDeleteModal({ open: true, target: g, isPermanent: false })
+        }}
+        onAddToCart={onAddToCart}
       />
     )
   }
 
-  // ---- Main catalog view ----
+  const isLoading = activeTab === 'active' ? gunsLoading : archivedLoading
+  const currentError = activeTab === 'active' ? gunsError : archivedError
+
   return (
     <>
       <section className="masthead">
         <h1 className="display">Hardware, by the spec sheet.</h1>
         <p className="lede">
-          A small armory of pistols, rifles, and shotguns. Every piece listed
-          with its type, caliber, and price — nothing else.
+          Koleksi senjata dan perlengkapan taktis. Setiap item dirinci berdasarkan jenis, kaliber,
+          dan harga aslinya.
         </p>
       </section>
 
+      {/* Toast Notification */}
+      {toastMessage && <div className="toast toast--success">{toastMessage}</div>}
+
       <section>
+        {/* Navigation Tab: Katalog Aktif vs Arsip (Challenge 6) */}
+        <div className="catalog-tabs-bar">
+          <button
+            type="button"
+            className={`catalog-tab-btn ${activeTab === 'active' ? 'active' : ''}`}
+            onClick={() => {
+              setActiveTab('active')
+              setCurrentPage(1)
+            }}
+          >
+            Katalog Aktif ({rawGuns.length})
+          </button>
+          <button
+            type="button"
+            className={`catalog-tab-btn ${activeTab === 'archived' ? 'active' : ''}`}
+            onClick={() => {
+              setActiveTab('archived')
+              setCurrentPage(1)
+            }}
+          >
+            <Archive size={15} /> Arsip / Terhapus ({archivedGuns.length})
+          </button>
+        </div>
+
+        {/* Header List */}
         <div className="list-head">
-          <h2>Current stock</h2>
+          <h2>
+            {activeTab === 'active' ? 'Stok Tersedia' : 'Barang Terarsip (Soft Deleted)'}
+          </h2>
           <div className="list-head-right">
             <span className="count">
-              {filteredGuns.length} piece{filteredGuns.length !== 1 ? 's' : ''}
+              Total {filteredGuns.length} item
             </span>
-            {onNavigate && (
+            {activeTab === 'active' && onNavigate && (
               <button
                 type="button"
                 className="btn btn--primary btn--sm"
                 onClick={() => onNavigate('Create')}
               >
-                <Plus size={16} /> Add
+                <Plus size={16} /> Tambah Hardware
               </button>
             )}
           </div>
         </div>
 
-        {/* Filters */}
+        {/* Filter & Pencarian */}
         <AdvancedFilter
           search={search}
-          onSearch={setSearch}
+          onSearch={handleSearchChange}
           categories={categories}
           activeCategory={activeCategory}
-          onCategory={setActiveCategory}
+          onCategory={handleCategoryChange}
           sortKey={sortKey}
           sortOrder={sortOrder}
-          onSort={({ key, order }) => { setSortKey(key); setSortOrder(order) }}
+          onSort={({ key, order }) => {
+            setSortKey(key)
+            setSortOrder(order)
+            setCurrentPage(1)
+          }}
         />
 
-        {/* States */}
-        {loading && (
+        {/* Loading State */}
+        {isLoading && (
           <div className="state-box">
             <Loader size={28} className="spin" />
-            <p>Loading products…</p>
+            <p>Memuat hardware…</p>
           </div>
         )}
 
-        {!loading && error && !useLocal && (
+        {/* Error State */}
+        {!isLoading && currentError && !useLocal && (
           <div className="state-box state-box--error">
             <AlertCircle size={28} />
-            <p>{error}</p>
+            <p>{currentError}</p>
             <div className="state-box__actions">
-              <button type="button" className="btn btn--outline" onClick={refetch}>
-                <RefreshCw size={16} /> Retry
-              </button>
               <button
                 type="button"
                 className="btn btn--outline"
-                onClick={() => setUseLocal(true)}
+                onClick={activeTab === 'active' ? refetchGuns : refetchArchived}
               >
-                View Local Catalog
+                <RefreshCw size={16} /> Coba Lagi
               </button>
+              {activeTab === 'active' && (
+                <button
+                  type="button"
+                  className="btn btn--outline"
+                  onClick={() => setUseLocal(true)}
+                >
+                  Buka Katalog Lokal
+                </button>
+              )}
             </div>
           </div>
         )}
 
-        {!loading && filteredGuns.length === 0 && !error && (
+        {/* Empty State */}
+        {!isLoading && filteredGuns.length === 0 && !currentError && (
           <div className="state-box">
             <PackageOpen size={28} />
-            <p>No products match your search.</p>
+            <p>
+              {activeTab === 'active'
+                ? 'Tidak ada produk yang sesuai dengan pencarian.'
+                : 'Tidak ada item yang diarsipkan saat ini.'}
+            </p>
           </div>
         )}
 
-        {/* Product grid */}
+        {/* Grid Produk */}
         {filteredGuns.length > 0 && (
-          <ul className="stock">
-            {filteredGuns.map((gun) => (
-              <GunCard
-                key={gun.id || gun.name}
-                gun={gun}
-                onSelect={setSelectedGun}
-                onEdit={onNavigate ? (g) => onNavigate('Edit', g) : undefined}
-                onDelete={setDeleteTarget}
-              />
-            ))}
-          </ul>
+          <>
+            <ul className="stock">
+              {paginatedGuns.map((gun) => (
+                <div key={gun.id || gun.name} className="catalog-card-wrap">
+                  {/* Tampilkan Card Standar untuk Aktif */}
+                  {activeTab === 'active' ? (
+                    <GunCard
+                      gun={gun}
+                      onSelect={setSelectedGun}
+                      onEdit={onNavigate ? (g) => onNavigate('Edit', g) : undefined}
+                      onDelete={(g) =>
+                        setDeleteModal({ open: true, target: g, isPermanent: false })
+                      }
+                      onAddToCart={onAddToCart}
+                    />
+                  ) : (
+                    /* Challenge 6: Tampilan Khusus untuk Item di Arsip */
+                    <li className="card card--archived">
+                      <div className="card-btn" onClick={() => setSelectedGun(gun)}>
+                        <img
+                          className="card-img"
+                          src={gun.image_url || gun.image || '/guns/pistol.svg'}
+                          alt={gun.name}
+                        />
+                        <span className="name display">{gun.name}</span>
+                        <span className="type">
+                          {gun.type || gun.category} · {gun.caliber}
+                        </span>
+                        <span className="archive-badge">Status: Diarsip</span>
+                      </div>
+                      <div className="archive-actions">
+                        <button
+                          type="button"
+                          className="btn btn--outline btn--sm"
+                          onClick={() => handleRestore(gun)}
+                          disabled={actionLoading}
+                          title="Restore ke katalog aktif"
+                        >
+                          <RotateCcw size={14} /> Pulihkan
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn--danger btn--sm"
+                          onClick={() =>
+                            setDeleteModal({ open: true, target: gun, isPermanent: true })
+                          }
+                          disabled={actionLoading}
+                          title="Hapus permanen dari database"
+                        >
+                          <Trash2 size={14} /> Hapus Permanen
+                        </button>
+                      </div>
+                    </li>
+                  )}
+                </div>
+              ))}
+            </ul>
+
+            {/* Challenge 1: Komponen Pagination */}
+            <Pagination
+              currentPage={currentPage}
+              totalPages={totalPages}
+              onPageChange={(page) => {
+                setCurrentPage(page)
+                window.scrollTo({ top: 380, behavior: 'smooth' })
+              }}
+            />
+          </>
         )}
 
-        {useLocal && (
+        {useLocal && activeTab === 'active' && (
           <p className="local-notice">
-            Showing local catalog (server unavailable).{' '}
+            Menampilkan katalog lokal offline.{' '}
             <button
               type="button"
               className="link-btn"
-              onClick={() => { setUseLocal(false); refetch() }}
+              onClick={() => {
+                setUseLocal(false)
+                refetchGuns()
+              }}
             >
-              Retry server
+              Hubungkan ulang server
             </button>
           </p>
         )}
       </section>
 
-      {/* Delete confirmation */}
+      {/* Modal Konfirmasi Hapus (Soft Delete vs Permanent) */}
       <ConfirmModal
-        open={!!deleteTarget}
-        title="Delete Product"
-        message={`Are you sure you want to delete "${deleteTarget?.name}"? This action cannot be undone.`}
-        confirmLabel="Delete"
+        open={deleteModal.open}
+        title={deleteModal.isPermanent ? 'Hapus Permanen Produk' : 'Arsipkan / Soft Delete Produk'}
+        message={
+          deleteModal.isPermanent
+            ? `Apakah Anda yakin ingin menghapus "${deleteModal.target?.name}" secara PERMANEN? Data tidak dapat dipulihkan kembali.`
+            : `Apakah Anda ingin mengarsipkan "${deleteModal.target?.name}"? Item akan dipindahkan ke tab Arsip dan dapat dipulihkan sewaktu-waktu.`
+        }
+        confirmLabel={deleteModal.isPermanent ? 'Hapus Permanen' : 'Arsipkan'}
         danger
-        loading={deleting}
-        onConfirm={handleDelete}
-        onCancel={() => { setDeleteTarget(null); setDeleteError('') }}
+        loading={actionLoading}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setDeleteModal({ open: false, target: null, isPermanent: false })}
       />
-      {deleteError && (
-        <div className="toast toast--error">{deleteError}</div>
-      )}
     </>
   )
 }
